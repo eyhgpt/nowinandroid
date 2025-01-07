@@ -42,10 +42,11 @@ import kotlin.test.assertEquals
  * This class contains more unit tests on the offline repositories and related classes
  */
 class EyhRepositoryTests {
+    private val stringList1to19 = (1..19).toList().map(Int::toString)
 
     private val testScope = TestScope(UnconfinedTestDispatcher())
 
-    private lateinit var subject: OfflineFirstTopicsRepository
+    private lateinit var topicsRepo: OfflineFirstTopicsRepository
 
     private lateinit var topicDao: TopicDao
 
@@ -58,11 +59,16 @@ class EyhRepositoryTests {
     @Before
     fun setup() {
         topicDao = TestTopicDao()
+
         network = TestNiaNetworkDataSource()
-        niaPreferences = NiaPreferencesDataSource(InMemoryDataStore(UserPreferences.getDefaultInstance()))
+
+        niaPreferences = NiaPreferencesDataSource(
+            InMemoryDataStore(UserPreferences.getDefaultInstance()),
+        )
+
         synchronizer = TestSynchronizer(niaPreferences)
 
-        subject = OfflineFirstTopicsRepository(
+        topicsRepo = OfflineFirstTopicsRepository(
             topicDao = topicDao,
             network = network,
         )
@@ -77,6 +83,8 @@ class EyhRepositoryTests {
      *    (topicVersion = 0, newsResourceVersion = 0).
      * 2. After updating the topicVersion to 10 using `updateChangeListVersions`, the updated
      *    version is correctly reflected in `getChangeListVersions()`.
+     * 3. After synchronizing the repository with the `synchronizer`, the topicVersion is updated
+     *    to match the latest version from the network (19 in this case).
      */
     @Test
     fun synchronizer_updateChangeListVersions_and_getChangeListVersions() =
@@ -84,7 +92,7 @@ class EyhRepositoryTests {
             // Step 1: Verify the initial state of change list versions.
             assertEquals(
                 expected = ChangeListVersions(topicVersion = 0, newsResourceVersion = 0),
-                actual = synchronizer.getChangeListVersions(), // Default values should be returned.
+                actual = synchronizer.getChangeListVersions(),
             )
 
             // Step 2: Update the topicVersion to 10.
@@ -98,59 +106,32 @@ class EyhRepositoryTests {
                 expected = ChangeListVersions(topicVersion = 10, newsResourceVersion = 0),
                 actual = synchronizer.getChangeListVersions(),
             )
-        }
 
-    /**
-     * Unit test to verify the initial synchronization behavior of `subject.syncWith(synchronizer)`.
-     *
-     * This test ensures that:
-     * 1. The initial `topicVersion` in `synchronizer.getChangeListVersions()` is 0.
-     * 2. The initial state of `topicDao.getTopicEntities()` is empty.
-     * 3. After invoking `subject.syncWith(synchronizer)`, the `topicDao` is populated with
-     *    topics having IDs in the range of 1 to 19, indicating successful synchronization.
-     */
-    @Test
-    fun populate_topicDao_with_topicVersion_0() =
-        testScope.runTest {
-            // Step 1: Verify the initial topic version in synchronizer is 0.
+            // Step 3: Synchronize the repository with the `synchronizer`.
+            // This step ensures that the repository fetches the latest change list versions
+            // from the network and updates its state accordingly.
+            topicsRepo.syncWith(synchronizer)
+
+            // Verify that after synchronization, the topicVersion is updated to match
+            // the latest version from the network (19)
             assertEquals(
-                expected = 0,
-                actual = synchronizer.getChangeListVersions().topicVersion, // Default topicVersion should be 0.
-            )
-
-            // Step 2: Verify the initial state of topicDao is empty.
-            assertEquals(
-                expected = emptyList<TopicEntity>(),
-                actual = topicDao.getTopicEntities().first(), // No topics should exist initially.
-            )
-
-            // Step 3: Perform synchronization and verify that topicDao is populated.
-            subject.syncWith(synchronizer)
-
-            // Verify that topicDao now contains topics with IDs from 1 to 19.
-            assertEquals(
-                expected = (1..19).toList().map(Int::toString),
-                actual = topicDao.getTopicEntities().first().map(TopicEntity::id),
-            )
-
-            // Verify that subject.getTopics() now also contains topics with IDs from 1 to 19.
-            assertEquals(
-                expected = (1..19).toList().map(Int::toString),
-                actual = subject.getTopics().first().map(Topic::id),
+                expected = ChangeListVersions(topicVersion = 19, newsResourceVersion = 0),
+                actual = synchronizer.getChangeListVersions(),
             )
         }
 
     /**
-     * Unit test to verify the synchronization behavior of `OfflineFirstTopicsRepository` and `topicDao`.
+     * Unit test to verify the synchronization behavior of `OfflineFirstTopicsRepository`
+     * and `topicDao`.
      *
      * This test ensures that:
      * 1. The initial state of `topicDao.getTopicEntities()` is empty.
      * 2. After updating the `topicVersion` to 10 and synchronizing, the topics with IDs
-     *    in the range of 11 to 19 are correctly retrieved and stored in `topicDao`.
+     *    in the range of 11 to 19 are correctly retrieved from `topicDao`.
      * 3. After updating the `topicVersion` to 15 and synchronizing again, topics with IDs
-     *    in the range of 16 to 19 (newly added) are merged with previously synchronized topics
-     *    (IDs 11 to 15) TODO: I'm not sure if this behavior is intentional. Question asked on
-     *    https://github.com/android/nowinandroid/issues/1796
+     *    (16, 17, 18, 19, 11, 12, 13, 14, 15) are retrieved from `topicDao`
+     *    TODO: Intentional behavior? Question asked on
+     *     https://github.com/android/nowinandroid/issues/1796
      */
     @Test
     fun topic_entity_sync_with_version_updates() =
@@ -165,7 +146,8 @@ class EyhRepositoryTests {
             synchronizer.updateChangeListVersions {
                 copy(topicVersion = 10)
             }
-            subject.syncWith(synchronizer)
+
+            topicsRepo.syncWith(synchronizer)
 
             // Verify that topics with IDs from 11 to 19 are retrieved and stored in topicDao.
             assertEquals(
@@ -177,122 +159,177 @@ class EyhRepositoryTests {
             synchronizer.updateChangeListVersions {
                 copy(topicVersion = 15)
             }
-            subject.syncWith(synchronizer)
 
-            // Verify that newly added topics (16 to 19) are merged with existing ones (11 to 15)
+            topicsRepo.syncWith(synchronizer)
+
+            // Intentional behavior?
             assertEquals(
                 expected = listOf(16, 17, 18, 19, 11, 12, 13, 14, 15).map(Int::toString),
                 actual = topicDao.getTopicEntities().first().map(TopicEntity::id),
             )
         }
 
+    /**
+     * Verifies the relationship of topics data across the `network`, `topicDao`, and
+     * `topicsRepo` after synchronization.
+     *
+     * The test ensures that:
+     * 1. The `network.getTopics()`, `topicDao.getTopicEntities()`, and
+     *    `topicsRepo.getTopics()` contain the same topics with IDs from 1 to 19.
+     * 2. The conversion between `NetworkTopic`, `TopicEntity`, and `Topic` is accurate and
+     *    consistent.
+     */
     @Test
-    fun offlineFirstTopicsRepository_topics_stream_is_backed_by_topics_dao() =
+    fun network_topicDao_topicsRepo_relationship() =
         testScope.runTest {
-            // After sync, topicDao.getTopicEntities().first() and subject.getTopics().first()
-            // will return non-empty lists. 
-            subject.syncWith(synchronizer)
-            
+            // Synchronize repository with the network
+            topicsRepo.syncWith(synchronizer)
+
+            // Fetch topics from network, DAO, and repository
+            val networkTopics = network.getTopics()
+            val topicDaoTopics = topicDao.getTopicEntities().first()
+            val repoTopics = topicsRepo.getTopics().first()
+
+            // Verify that all sources contain topics with IDs from 1 to 19
             assertEquals(
-                topicDao.getTopicEntities()
-                    .first()
+                expected = stringList1to19,
+                actual = networkTopics.map(NetworkTopic::id),
+            )
+
+            assertEquals(
+                expected = stringList1to19,
+                actual = topicDaoTopics.map(TopicEntity::id),
+            )
+
+            assertEquals(
+                expected = stringList1to19,
+                actual = repoTopics.map(Topic::id),
+            )
+
+            // Verify that the conversion from NetworkTopic to TopicEntity is accurate
+            assertEquals<List<TopicEntity>>(
+                expected = topicDaoTopics,
+                actual = networkTopics.map(NetworkTopic::asEntity),
+            )
+
+            // Verify that the conversion from TopicEntity to Topic is accurate
+            assertEquals<List<Topic>>(
+                expected = repoTopics,
+                actual = topicDaoTopics.map(TopicEntity::asExternalModel),
+            )
+
+            // Verify the full conversion chain: NetworkTopic -> TopicEntity -> Topic
+            assertEquals<List<Topic>>(
+                expected = repoTopics,
+                actual = networkTopics.map(NetworkTopic::asEntity)
                     .map(TopicEntity::asExternalModel),
-                subject.getTopics()
-                    .first(),
             )
         }
 
+    /**
+     * Verifies the synchronization behavior of the `topicsRepo` with the `synchronizer` and
+     * `network` when topics are deleted and re-added in the collection. The test ensures that:
+     *
+     * 1. The `network.latestChangeListVersion` and `synchronizer.getChangeListVersions` are
+     *    updated correctly.
+     * 2. The `network.getTopics` reflects the correct state of topics in the network.
+     * 3. The local database (`topicDao`) is updated to reflect deletions and additions accurately.
+     * 4. The repository (`topicsRepo`) provides consistent data after synchronization.
+     */
     @Test
-    fun offlineFirstTopicsRepository_sync_pulls_from_network() =
+    fun network_editCollection_affects_topics_ChangeListVersion_and_dao() =
         testScope.runTest {
-            subject.syncWith(synchronizer)
-
-            val networkTopics = network.getTopics()
-                .map(NetworkTopic::asEntity)
-
-            val dbTopics = topicDao.getTopicEntities()
-                .first()
-
+            // Initial state verification
             assertEquals(
-                networkTopics.map(TopicEntity::id),
-                dbTopics.map(TopicEntity::id),
+                expected = 19,
+                actual = network.latestChangeListVersion(CollectionType.Topics),
             )
 
-            // After sync version should be updated
             assertEquals(
-                network.latestChangeListVersion(CollectionType.Topics),
-                synchronizer.getChangeListVersions().topicVersion,
-            )
-        }
-
-    @Test
-    fun offlineFirstTopicsRepository_incremental_sync_pulls_from_network() =
-        testScope.runTest {
-            // Set topics version to 10
-            synchronizer.updateChangeListVersions {
-                copy(topicVersion = 10)
-            }
-
-            subject.syncWith(synchronizer)
-
-            val networkTopics = network.getTopics()
-                .map(NetworkTopic::asEntity)
-                // Drop 10 to simulate the first 10 items being unchanged
-                .drop(10)
-
-            val dbTopics = topicDao.getTopicEntities()
-                .first()
-
-            assertEquals(
-                networkTopics.map(TopicEntity::id),
-                dbTopics.map(TopicEntity::id),
+                expected = 0,
+                actual = synchronizer.getChangeListVersions().topicVersion,
             )
 
-            // After sync version should be updated
             assertEquals(
-                network.latestChangeListVersion(CollectionType.Topics),
-                synchronizer.getChangeListVersions().topicVersion,
+                expected = stringList1to19,
+                actual = network.getTopics().map(NetworkTopic::id),
             )
-        }
 
-    @Test
-    fun offlineFirstTopicsRepository_sync_deletes_items_marked_deleted_on_network() =
-        testScope.runTest {
-            val networkTopics = network.getTopics()
-                .map(NetworkTopic::asEntity)
-                .map(TopicEntity::asExternalModel)
+            // Delete topic with id "1" from the network
+            network.editCollection(
+                collectionType = CollectionType.Topics,
+                id = "1",
+                isDelete = true,
+            )
 
-            // Delete half of the items on the network
-            val deletedItems = networkTopics
-                .map(Topic::id)
-                .partition { it.chars().sum() % 2 == 0 }
-                .first
-                .toSet()
+            // Synchronize repository with the network
+            topicsRepo.syncWith(synchronizer)
 
-            deletedItems.forEach {
+            // Verify that the change list version is updated and topic deletion is reflected
+            assertEquals(
+                expected = 20,
+                actual = network.latestChangeListVersion(CollectionType.Topics),
+            )
+
+            assertEquals(
+                expected = 20,
+                actual = synchronizer.getChangeListVersions().topicVersion,
+            )
+
+            assertEquals(
+                expected = stringList1to19,
+                actual = network.getTopics().map(NetworkTopic::id),
+            )
+
+            assertEquals(
+                expected = stringList1to19.drop(1),
+                actual = topicDao.getTopicEntities().first().map(TopicEntity::id),
+            )
+
+            // Re-add topic with id "1" and delete topics with ids "17", "18", and "19"
+            network.editCollection(
+                collectionType = CollectionType.Topics,
+                id = "1",
+                isDelete = false,
+            )
+
+            (17..19).forEach {
                 network.editCollection(
                     collectionType = CollectionType.Topics,
-                    id = it,
+                    id = it.toString(),
                     isDelete = true,
                 )
             }
 
-            subject.syncWith(synchronizer)
+            // Synchronize repository again
+            topicsRepo.syncWith(synchronizer)
 
-            val dbTopics = topicDao.getTopicEntities()
-                .first()
-                .map(TopicEntity::asExternalModel)
-
-            // Assert that items marked deleted on the network have been deleted locally
+            // Verify that the change list version is updated and deletions/additions are reflected correctly
             assertEquals(
-                networkTopics.map(Topic::id) - deletedItems,
-                dbTopics.map(Topic::id),
+                expected = 24,
+                actual = network.latestChangeListVersion(CollectionType.Topics),
             )
 
-            // After sync version should be updated
             assertEquals(
-                network.latestChangeListVersion(CollectionType.Topics),
-                synchronizer.getChangeListVersions().topicVersion,
+                expected = 24,
+                actual = synchronizer.getChangeListVersions().topicVersion,
+            )
+
+            assertEquals(
+                expected = stringList1to19,
+                actual = network.getTopics().map(NetworkTopic::id),
+            )
+
+            val stringList1to16 = stringList1to19.dropLast(3)
+
+            assertEquals(
+                expected = stringList1to16,
+                actual = topicDao.getTopicEntities().first().map(TopicEntity::id),
+            )
+
+            assertEquals(
+                expected = stringList1to16,
+                actual = topicsRepo.getTopics().first().map(Topic::id),
             )
         }
 }

@@ -61,4 +61,20 @@ plugins {
     alias(libs.plugins.secrets) apply false
     alias(libs.plugins.room) apply false
     alias(libs.plugins.module.graph) apply true // Plugin applied to allow module graph generation
+
+    // EY added
+    id("idea")
+}
+
+/**
+ * EY added
+ */
+idea {
+    module {
+        // Enable automatic downloading of source JARs for dependencies
+        isDownloadSources = true
+
+        // Enable automatic downloading of Javadoc JARs for dependencies
+        isDownloadJavadoc = true
+    }
 }
